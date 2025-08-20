@@ -157,7 +157,8 @@ class TransformerBlock(nn.Module):
                 act_layer=get_activation(activation), drop=proj_drop, norm_layer=nn.LayerNorm
             )
         
-        self.gene_updater = GeneUpdate(d_model, n_genes, proj_drop=proj_drop, non_negative=gene_exp_non_negative)
+        self.gene_updater = GeneUpdate(d_model, n_genes, proj_drop=proj_drop#, non_negative=gene_exp_non_negative
+                                       )
 
     def forward(self, gene_exp, token_embs, coords, neighbor_indices):
         context_token_embs = self.attn(gene_exp, token_embs, coords, neighbor_indices)

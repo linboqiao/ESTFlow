@@ -11,7 +11,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.discriminant_analysis import StandardScaler
 from huggingface_hub import snapshot_download, hf_hub_download
 
-from trainer import train_test_reg
+from .trainer import train_test_reg
 from stflow.utils import set_random_seed
 from stflow.hest_utils.encoder import load_encoder
 from stflow.hest_utils.st_dataset import H5TileDataset, load_adata
@@ -222,10 +222,10 @@ if __name__ == "__main__":
     parser.add_argument('--seed', type=int, default=1,
                     help='random seed for reproducible experiment (default: 1)')
     parser.add_argument('--overwrite', default=False, help='overwrite existing results')
-    parser.add_argument('--source_dataroot', default="/home/username/Anonymous_STFlow/dataset/")
-    parser.add_argument('--embed_dataroot', type=str, default="/home/username/Anonymous_STFlow/dataset/embed_dataroot")
-    parser.add_argument('--weights_root', type=str, default="/home/username/Anonymous_STFlow/dataset/weights_root")
-    parser.add_argument('--results_dir', type=str, default="home/username/Anonymous_STFlow/results_dir/hest")
+    parser.add_argument('--source_dataroot', default="/nas/linbo/biospace/exps/20240112-His2ST/STFlow+LoRA/dataset/hest-bench/")
+    parser.add_argument('--embed_dataroot', type=str, default="/nas/linbo/biospace/exps/20240112-His2ST/STFlow+LoRA/embed_data/hest-bench/")
+    parser.add_argument('--weights_root', type=str, default="/nas/linbo/biospace/exps/20240112-His2ST/STFlow+LoRA/dataset/weights/")
+    parser.add_argument('--results_dir', type=str,  default="/nas/linbo/biospace/exps/20240112-His2ST/STFlow+LoRA/dataset/hest-bench/results_dir/")
     parser.add_argument('--exp_code', type=str, default="uni")
     
     parser.add_argument('--precision', type=str, default='fp32', help='Precision (fp32 or fp16)')
@@ -239,7 +239,7 @@ if __name__ == "__main__":
     parser.add_argument('--dimreduce', type=str, default=None, help='whenever to perform dimensionality reduction before linear probing, can be "PCA" or None')
     parser.add_argument('--latent_dim', type=int, default=256, help='dimensionality reduction latent dimension')
     parser.add_argument('--encoders', nargs='+', default=["uni_v1_official"], help='All the encoders to benchmark:uni_v1_official,resnet50_trunc,ciga_loader')
-    parser.add_argument('--datasets', nargs='+', default=["LUNG"], help='Datasets from source_dataroot to use during benchmark')
+    parser.add_argument('--datasets', nargs='+', default=["all"], help='Datasets from source_dataroot to use during benchmark')
     args = parser.parse_args()
 
     set_random_seed(args.seed)
@@ -250,13 +250,13 @@ if __name__ == "__main__":
     precision = precisions.get(args.precision, torch.float32)
 
     #### download model checkpoints and dataset ####
-    snapshot_download(repo_id="MahmoodLab/hest-bench", repo_type='dataset', local_dir=args.weights_root, allow_patterns=['fm_v1/*'])
-    snapshot_download(repo_id="MahmoodLab/hest-bench", repo_type='dataset', local_dir=args.source_dataroot, ignore_patterns=['fm_v1/*'])
-    hf_hub_download("MahmoodLab/UNI", filename="pytorch_model.bin", local_dir=os.path.join(args.weights_root, "uni/"))
-    hf_hub_download("prov-gigapath/prov-gigapath", filename="pytorch_model.bin", local_dir=os.path.join(args.weights_root, "gigapath/"))
+    #snapshot_download(repo_id="MahmoodLab/hest-bench", repo_type='dataset', local_dir=args.weights_root, allow_patterns=['fm_v1/*'])
+    #snapshot_download(repo_id="MahmoodLab/hest-bench", repo_type='dataset', local_dir=args.source_dataroot, ignore_patterns=['fm_v1/*'])
+    #hf_hub_download("MahmoodLab/UNI", filename="pytorch_model.bin", local_dir=os.path.join(args.weights_root, "uni/"))
+    #hf_hub_download("prov-gigapath/prov-gigapath", filename="pytorch_model.bin", local_dir=os.path.join(args.weights_root, "gigapath/"))
 
     datasets = args.datasets
-    if len(datasets) >= 1 and datasets[0] == '*':
+    if len(datasets) >= 1 and datasets == ['all']:
         datasets = os.listdir(get_path(args.source_dataroot))
 
     #### Setup Save Directory ####

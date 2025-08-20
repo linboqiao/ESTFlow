@@ -1,3 +1,11 @@
+# Efficient Scalable Generation of Spatial Transcriptomics from Histology Images via Whole-Slide Flow Matching
+
+To run the code:
+```
+python -m stflow.app.hest.benchmark
+python -m stflow.app.flow.train
+```
+
 # Scalable Generation of Spatial Transcriptomics from Histology Images via Whole-Slide Flow Matching
 
 This is our PyTorch implementation for the paper:
