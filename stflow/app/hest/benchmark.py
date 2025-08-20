@@ -222,10 +222,10 @@ if __name__ == "__main__":
     parser.add_argument('--seed', type=int, default=1,
                     help='random seed for reproducible experiment (default: 1)')
     parser.add_argument('--overwrite', default=False, help='overwrite existing results')
-    parser.add_argument('--source_dataroot', default="/nas/linbo/biospace/exps/20240112-His2ST/STFlow+LoRA/dataset/hest-bench/")
-    parser.add_argument('--embed_dataroot', type=str, default="/nas/linbo/biospace/exps/20240112-His2ST/STFlow+LoRA/embed_data/hest-bench/")
-    parser.add_argument('--weights_root', type=str, default="/nas/linbo/biospace/exps/20240112-His2ST/STFlow+LoRA/dataset/weights/")
-    parser.add_argument('--results_dir', type=str,  default="/nas/linbo/biospace/exps/20240112-His2ST/STFlow+LoRA/dataset/hest-bench/results_dir/")
+    parser.add_argument('--source_dataroot', default="/nas/linbo/biospace/exps/20240112-His2ST/ESTFlow/dataset/hest-bench/")
+    parser.add_argument('--embed_dataroot', type=str, default="/nas/linbo/biospace/exps/20240112-His2ST/ESTFlow/embed_data/hest-bench/")
+    parser.add_argument('--weights_root', type=str, default="/nas/linbo/biospace/exps/20240112-His2ST/ESTFlow/dataset/weights/")
+    parser.add_argument('--results_dir', type=str,  default="/nas/linbo/biospace/exps/20240112-His2ST/ESTFlow/dataset/hest-bench/results_dir/")
     parser.add_argument('--exp_code', type=str, default="uni")
     
     parser.add_argument('--precision', type=str, default='fp32', help='Precision (fp32 or fp16)')
