@@ -225,7 +225,7 @@ if __name__ == "__main__":
     parser.add_argument('--source_dataroot', default="/nas/linbo/biospace/exps/20240112-His2ST/ESTFlow/dataset/hest-bench/")
     parser.add_argument('--embed_dataroot', type=str, default="/nas/linbo/biospace/exps/20240112-His2ST/ESTFlow/embed_data/hest-bench/")
     parser.add_argument('--weights_root', type=str, default="/nas/linbo/biospace/exps/20240112-His2ST/ESTFlow/dataset/weights/")
-    parser.add_argument('--results_dir', type=str,  default="/nas/linbo/biospace/exps/20240112-His2ST/ESTFlow/dataset/hest-bench/results_dir/")
+    parser.add_argument('--results_dir', type=str,  default="/nas/linbo/biospace/exps/20240112-His2ST/ESTFlow/results_dir/hest-bench/")
     parser.add_argument('--exp_code', type=str, default="uni")
     
     parser.add_argument('--precision', type=str, default='fp32', help='Precision (fp32 or fp16)')
@@ -238,7 +238,7 @@ if __name__ == "__main__":
     parser.add_argument('--normalize', type=bool, default=True)
     parser.add_argument('--dimreduce', type=str, default=None, help='whenever to perform dimensionality reduction before linear probing, can be "PCA" or None')
     parser.add_argument('--latent_dim', type=int, default=256, help='dimensionality reduction latent dimension')
-    parser.add_argument('--encoders', nargs='+', default=["uni_v1_official"], help='All the encoders to benchmark:uni_v1_official,resnet50_trunc,ciga_loader')
+    parser.add_argument('--encoders', nargs='+', default=["uni_v1_official"], help='All the encoders to benchmark:uni_v1_official,gigapath, resnet50_trunc,ciga_loader')
     parser.add_argument('--datasets', nargs='+', default=["all"], help='Datasets from source_dataroot to use during benchmark')
     args = parser.parse_args()
 
@@ -256,7 +256,7 @@ if __name__ == "__main__":
     #hf_hub_download("prov-gigapath/prov-gigapath", filename="pytorch_model.bin", local_dir=os.path.join(args.weights_root, "gigapath/"))
 
     datasets = args.datasets
-    if len(datasets) >= 1 and datasets == ['all']:
+    if len(datasets) >= 1 and datasets[0] == 'all':
         datasets = os.listdir(get_path(args.source_dataroot))
 
     #### Setup Save Directory ####
@@ -283,7 +283,7 @@ if __name__ == "__main__":
         enc_perfs = []
         for enc in encoders:
             exp_save_dir = os.path.join(save_dir, dataset, enc.name)
-            print("exp_save_dir", exp_save_dir)
+            print("exp_save_dir: ", exp_save_dir)
 
             os.makedirs(exp_save_dir, exist_ok=True)
             enc_results = predict_folds(args, exp_save_dir, enc, dataset, device, precision, source_dataroot)
@@ -311,7 +311,7 @@ if __name__ == "__main__":
             
     for key, val in perf_per_enc.items():
         perf_per_enc[key] = np.mean(val)
-    perf_per_enc = sorted(perf_per_enc, key=lambda item: item[1], reverse=True)
+    #perf_per_enc = sorted(perf_per_enc, key=lambda item: item[1], reverse=True)
         
     with open(os.path.join(save_dir, 'dataset_results.json'), 'w') as f:
         json.dump({'results': dataset_perfs, 'average': perf_per_enc}, f, sort_keys=True, indent=4)

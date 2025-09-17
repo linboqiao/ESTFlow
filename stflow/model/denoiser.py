@@ -66,6 +66,7 @@ class Denoiser(nn.Module):
                 attn_dropout=config.attn_dropout,
                 n_neighbors=config.n_neighbors,
                 act=config.activation,
+                multiview=config.multiview,
             )
         )
         self.loss_func = nn.MSELoss()

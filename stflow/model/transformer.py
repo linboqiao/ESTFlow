@@ -170,6 +170,151 @@ class TransformerBlock(nn.Module):
         return gene_exp, token_embs
 
 
+import torch
+import faiss                   # pip install faiss-gpu
+
+def knn_faiss_gpu_bak(coords, n_neighbors=10, similarity="L2"):
+    """
+    coords: [N, d] torch.Tensor (必须在 GPU 上, dtype=float32, contiguous)
+    n_neighbors: int, 每个点取多少邻居（不含自身）
+
+    return:
+        knn_dists: [N, n_neighbors] torch.Tensor
+        knn_indices: [N, n_neighbors] torch.Tensor
+    """
+    assert coords.is_cuda, "coords 必须在 GPU 上"
+    assert coords.dtype == torch.float32, "coords 必须是 float32"
+    coords = coords.contiguous()  # 确保内存连续
+    N, d = coords.shape
+
+    # GPU 资源管理器
+    res = faiss.StandardGpuResources()
+
+    # 建立 GPU Index
+    if similarity == "L2":
+        index = faiss.GpuIndexFlatL2(res, d)   # 精确 L2 KNN
+    elif similarity == "dot":
+        index = faiss.GpuIndexFlatIP(res, d)   # 内积（dot product）
+    ptr = faiss.cast_integer_to_float_ptr(coords.data_ptr())  # GPU pointer
+
+    # 把 coords 加入索引
+    coords_np = coords.detach().cpu().numpy()  # 必须 CPU numpy
+    index.add(coords_np) # pyright: ignore[reportCallIssue]
+
+    # 查询最近 n_neighbors+1 个（第一个是自己）
+    dists, inds = index.search(coords_np, n_neighbors + 1) # type: ignore
+
+    # 转成 torch tensor（仍在 GPU）
+    dists = torch.from_numpy(dists).to(coords.device)
+    inds = torch.from_numpy(inds).to(coords.device)
+
+    # 去掉自己
+    dists = dists[:, 1:]
+    inds = inds[:, 1:]
+    del res
+
+    return dists, inds
+
+import gc
+import numpy as np
+def knn_faiss_auto(coords, n_neighbors=10, similarity="L2", temp_memory=256*1024*1024, batch_size=None, force_cpu=False):
+    """
+    自动选择 GPU / CPU 版本的 KNN，显存不足时自动 fallback 到 CPU。
+    
+    参数:
+        coords: [N, d] torch.Tensor (可以在 CPU 或 GPU)
+        n_neighbors: int, 每个点取多少邻居（不含自身）
+        temp_memory: 限制 GPU 临时显存池大小 (默认 256MB)
+        batch_size: 大数据集时分批 search，降低显存/内存占用
+        force_cpu: 是否强制使用 CPU 版本
+
+    返回:
+        knn_dists: [N, n_neighbors] torch.Tensor
+        knn_indices: [N, n_neighbors] torch.Tensor
+    """
+    coords = coords.contiguous()
+    N, d = coords.shape
+    k = n_neighbors + 1
+
+    # --- 封装 CPU 版本 ---
+    def cpu_knn(coords, n_neighbors=10, similarity="L2", batch_size=None):
+        N, d = coords.shape
+        k = n_neighbors + 1
+        coords_cpu = coords.detach().cpu()
+        coords_np = coords_cpu.numpy().astype(np.float32)
+        if similarity == "L2":
+            index = faiss.IndexFlatL2(d)
+        elif similarity == "dot":
+            index = faiss.IndexFlatIP(d)
+        else:
+            raise ValueError(f"未知相似度度量: {similarity}")
+        index.add(coords_np)
+
+        if batch_size is None:
+            dists, inds = index.search(coords_np, k)
+        else:
+            all_dists, all_inds = [], []
+            for i in range(0, N, batch_size):
+                d, I = index.search(coords_np[i:i+batch_size], k)
+                all_dists.append(d)
+                all_inds.append(I)
+            dists = np.vstack(all_dists)
+            inds = np.vstack(all_inds)
+
+        dists = torch.from_numpy(dists)
+        inds = torch.from_numpy(inds)
+        return dists[:, 1:], inds[:, 1:]
+
+    # --- 如果强制用 CPU ---
+    if force_cpu:
+        return cpu_knn()
+
+    # --- GPU 版本 ---
+    try:
+        assert torch.cuda.is_available(), "未检测到 GPU，自动转到 CPU"
+        coords_gpu = coords.to("cuda", dtype=torch.float32)
+        res = faiss.StandardGpuResources()
+        res.setTempMemory(temp_memory)
+
+        if similarity == "L2":
+            index = faiss.GpuIndexFlatL2(res, d)
+        elif similarity == "dot":
+            index = faiss.GpuIndexFlatIP(res, d)
+        else:
+            raise ValueError(f"未知相似度度量: {similarity}")
+
+        coords_np = coords_gpu.detach().cpu().numpy()  # GPU->CPU (faiss-gpu 仍然需要 CPU numpy)
+        index.add(coords_np)
+
+        if batch_size is None:
+            dists, inds = index.search(coords_np, k)
+        else:
+            all_dists, all_inds = [], []
+            for i in range(0, N, batch_size):
+                d, I = index.search(coords_np[i:i+batch_size], k)
+                all_dists.append(d)
+                all_inds.append(I)
+            dists = np.vstack(all_dists)
+            inds = np.vstack(all_inds)
+
+        dists = torch.from_numpy(dists).to(coords_gpu.device)
+        inds = torch.from_numpy(inds).to(coords_gpu.device)
+        del index
+        del res
+        #torch.cuda.empty_cache()
+        gc.collect()
+        return dists[:, 1:], inds[:, 1:]
+
+    except RuntimeError as e:
+        # 捕获显存不足等错误，自动切回 CPU
+        if "cudaMalloc" in str(e) or "no kernel image" in str(e) or "CUDA" in str(e):
+            # print("[WARN] FAISS GPU 版本 KNN OOM / 初始化失败，自动切换到 CPU 版本...")
+            torch.cuda.empty_cache()
+            gc.collect()
+            return cpu_knn(coords, n_neighbors=n_neighbors, similarity=similarity, batch_size=batch_size)
+        else:
+            raise e
+
 class SpatialTransformer(nn.Module):
     def __init__(self, config):
         super(SpatialTransformer, self).__init__()
@@ -184,22 +329,39 @@ class SpatialTransformer(nn.Module):
                             ) \
                 for i in range(config.n_layers)
         ])
+        if config.multiview:
+            self.multiview = True
+        else:
+            self.multiview = False
 
-    def _build_graph(self, coords, batch_idx, n_neighbors, exclude_self=True):
+    def _build_graph(self, coords, features, batch_idx, n_neighbors, exclude_self=True):
         # coords: [N, 2], batch_idx: [N], n_neighbors: int
         exclude_self_mask = torch.eye(coords.shape[0], dtype=torch.bool, device=coords.device)  # 1: diagonal elements
         batch_mask = batch_idx.unsqueeze(0) == batch_idx.unsqueeze(1)  # [N, N], True if the token is in the same batch
 
         # calculate relative distance
-        rel_pos = rearrange(coords, 'n d -> n 1 d') - rearrange(coords, 'n d -> 1 n d')
-        rel_dist = rel_pos.norm(dim = -1).detach()  # [N, N]
-        if exclude_self:
-            rel_dist.masked_fill_(exclude_self_mask | ~batch_mask, 1e9)
-        else:
-            rel_dist.masked_fill_(~batch_mask, 1e9)
+        if False:
+            rel_pos = rearrange(coords, 'n d -> n 1 d') - rearrange(coords, 'n d -> 1 n d')
+            rel_dist = rel_pos.norm(dim = -1).detach()  # [N, N]
+            if exclude_self:
+                rel_dist.masked_fill_(exclude_self_mask | ~batch_mask, 1e9)
+            else:
+                rel_dist.masked_fill_(~batch_mask, 1e9)
 
-        dist_values, nearest_indices = rel_dist.topk(n_neighbors, dim = -1, largest = False)
-        return nearest_indices
+            dist_values, nearest_indices = rel_dist.topk(n_neighbors, dim = -1, largest = False)
+        else:
+            dist_values, nearest_indices = knn_faiss_auto(coords, n_neighbors=n_neighbors)
+
+        idxs = nearest_indices
+
+        if self.multiview:
+            dist_values, nearest_indices_dot = knn_faiss_auto(features, n_neighbors=n_neighbors, similarity="dot")
+            
+            dist_values, nearest_indices_L2 = knn_faiss_auto(features, n_neighbors=n_neighbors, similarity="L2")
+
+            idxs = torch.cat([nearest_indices, nearest_indices_dot, nearest_indices_L2], dim=1)  # 按列拼接
+
+        return idxs
 
     def forward(self, gene_exp, features, coords):
         # gene_exp: [B, N_cells, N_genes], features: [B, N_cells, -1], coords: [B, N_cells, 2]
@@ -214,7 +376,7 @@ class SpatialTransformer(nn.Module):
         gene_exp = gene_exp[~pad_mask]  # [-1, N_genes]
 
         nearest_indices = self._build_graph(
-            coords, batch_idx, min(self.n_neighbors, N_cells), exclude_self=True
+            coords, features, batch_idx, min(self.n_neighbors, N_cells), exclude_self=True
         )
 
         # forward pass
