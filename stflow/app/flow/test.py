@@ -61,8 +61,8 @@ def test(args, diffusier, model, loader_list, return_all=False):
 
             exp_t1 = diffusier.sample_from_prior(labels.shape).to(args.device)
             ts = torch.linspace(
-                0.01, 1.0, args.n_sample_steps
-            )[:, None].expand(args.n_sample_steps, exp_t1.shape[0]).to(args.device)
+                0.0, 1.0, args.n_sample_steps+1
+            )[:, None].expand(args.n_sample_steps+1, exp_t1.shape[0]).to(args.device)
 
             for step, (t1, t2) in enumerate(zip(ts[:-1], ts[1:])):
                 pred = model.inference(
@@ -71,10 +71,9 @@ def test(args, diffusier, model, loader_list, return_all=False):
                 )
                 d_t = t2 - t1
 
-                if step == args.n_sample_steps - 2:
+                exp_t1 = diffusier.denoise(pred, exp_t1, t1, d_t)
+                if step == args.n_sample_steps-1:
                     break
-                else:
-                    exp_t1 = diffusier.denoise(pred, exp_t1, t1, d_t)
 
             sample = pred
             cur_pred.append(sample.squeeze(0).cpu().numpy())

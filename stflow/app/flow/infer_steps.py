@@ -152,8 +152,8 @@ def main(args, split_id, train_sample_ids, test_sample_ids, val_save_dir, checkp
     for steps in max_steps:
 
         if True:
-            args.n_sample_steps = steps + 2
-            print("steps: ", steps)
+            args.n_sample_steps = steps
+            print("\nsteps: ", steps)
             start = time()
             val_perf_dict, pred_dump = test(args, diffusier, model, val_loaders, return_all=True)
             end = time()

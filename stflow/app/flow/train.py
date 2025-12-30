@@ -123,13 +123,12 @@ def main(args, split_id, train_sample_ids, test_sample_ids, val_save_dir, checkp
     '''
 
     # 2. 加载权重
-    if checkpoint_load_dir != None:
-        checkpoint_path = os.path.join(checkpoint_load_dir, "pearson_best.pth")
+    checkpoint_path = os.path.join(checkpoint_load_dir, "pearson_best.pth")
+    if os.path.exists(checkpoint_path):
         state_dict = torch.load(checkpoint_path, map_location="cpu")  # 或 "cuda"
         model.load_state_dict(state_dict)
         val_perf_dict, pred_dump = test(args, diffusier, model, val_loaders, return_all=True)
         best_pearson = val_perf_dict["all"]['pearson_mean']
-        best_val_dict = val_perf_dict
         for patch_name, dataset_res in val_perf_dict.items():
             with open(os.path.join(val_save_dir, f'{patch_name}_results.json'), 'w') as f:
                 json.dump(dataset_res, f, sort_keys=True, indent=4)
@@ -178,7 +177,7 @@ def main(args, split_id, train_sample_ids, test_sample_ids, val_save_dir, checkp
             avg_loss += loss.cpu().item()
         
         avg_loss /= len(train_loader)
-        epoch_iter.set_description(f"epoch: {epoch}, avg_loss: {avg_loss:.3f}")
+        epoch_iter.set_description(f"epoch: {epoch}, avg_loss: {avg_loss:.3f}, best_pearson: {best_pearson:.3f}")
 
         #if args.save_step > 0 and epoch % args.save_step == 0:
         #    torch.save(model.state_dict(), os.path.join(checkpoint_save_dir, f"{epoch}.pth"))
@@ -199,7 +198,7 @@ def main(args, split_id, train_sample_ids, test_sample_ids, val_save_dir, checkp
                 
                 # save_pkl(os.path.join(val_save_dir, 'inference_dump.pkl'), pred_dump)
                 early_stop_step = 0
-                print(f"pearson_mean: {best_pearson}")
+                #print(f"pearson_mean: {best_pearson}")
 
             else:
                 early_stop_step += 1
@@ -223,11 +222,13 @@ def main(args, split_id, train_sample_ids, test_sample_ids, val_save_dir, checkp
 
     toc_total = perf_counter()
 
+    '''
     accelerator_memory_final = device_module.max_memory_allocated()
     accelerator_memory_avg = int(sum(accelerator_memory_log) / len(accelerator_memory_log))
     print(f"memory avg: {accelerator_memory_avg // 2**20}MB")
     print(f"memory max: {(accelerator_memory_final - accelerator_memory_init) // 2**20}MB")
     print(f"total time: {toc_total - tic_total:.2f}s")
+    '''
     return best_val_dict["all"]
 
 
@@ -290,11 +291,11 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int, default=1, help='Batch size')
     parser.add_argument('--lr', type=float, default=5e-4)
     parser.add_argument('--early_stop_step', type=int, default=10)
-    parser.add_argument('--epochs', type=int, default=-1)
+    parser.add_argument('--epochs', type=int, default=1000)
     parser.add_argument('--clip_norm', type=float, default=1.)
     parser.add_argument('--save_step', type=int, default=1)
-    parser.add_argument('--eval_step', type=int, default=1)
-    parser.add_argument('--num_workers', type=int, default=1, help='Number of workers for dataloader')
+    parser.add_argument('--eval_step', type=int, default=5)
+    parser.add_argument('--num_workers', type=int, default=16, help='Number of workers for dataloader')
     parser.add_argument('--loss_func', type=str, default='mse', help="mse | mae | pearson")
     parser.add_argument('--patch_distribution', type=str, default='uniform')
     parser.add_argument('--n_genes', type=int, default=50)    
@@ -310,11 +311,11 @@ if __name__ == '__main__':
     parser.add_argument('--backbone', type=str, default="spatial_transformer")
     parser.add_argument('--hidden_dim', type=int, default=128)
     parser.add_argument('--pairwise_hidden_dim', type=int, default=128)
-    parser.add_argument('--n_layers', type=int, default=4)
+    parser.add_argument('--n_layers', type=int, default=8)
     parser.add_argument('--dropout', type=float, default=0.2)
     parser.add_argument('--attn_dropout', type=float, default=0.2)
-    parser.add_argument('--n_neighbors', type=int, default=32)
-    parser.add_argument('--n_heads', type=int, default=4)
+    parser.add_argument('--n_neighbors', type=int, default=16)
+    parser.add_argument('--n_heads', type=int, default=8)
     parser.add_argument('--feature_dim', type=int, default=1024, help="uni:1024, ciga:512")
     parser.add_argument('--norm', type=str, default='layer', help="batch | layer")
     parser.add_argument('--activation', type=str, default='swiglu', help="relu | gelu | swiglu")

@@ -34,5 +34,4 @@ class Interpolant:
         # exp_t: [B, n_cells, n_genes]
         # t: [B]
         # d_t: [B]
-        exp_vf = (exp_1 - exp_t) / (1 - t[:, None, None])
-        return exp_t + d_t[:, None, None] * exp_vf
+        return exp_t + d_t[:, None, None] * (exp_1 - exp_t)
