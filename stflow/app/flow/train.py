@@ -86,9 +86,25 @@ def main(args, split_id, train_sample_ids, test_sample_ids, val_save_dir, checkp
 
     model = Denoiser(args)
     model.cuda()
+    '''
+    modules_linear = [n for n, m in model.named_modules() if "linear" in type(m).__name__.lower()]
+    from peft import LoraConfig
+    config = LoraConfig(
+        r=8,
+        lora_alpha=16,
+        lora_dropout=0.05,
+        bias="none",
+        target_modules = modules_linear[:-4],            
+        modules_to_save = modules_linear[-4:]
+        )
+    from peft import get_peft_model
+    model = get_peft_model(model, config)
+    '''
+
     if args.distributed:
         if args.rank == 0:
             print("Using native Torch DistributedDataParallel.")
+            pprint(args)
         model = NativeDDP(model, device_ids=[args.local_rank]) 
     else:
         device = args.device
@@ -102,33 +118,12 @@ def main(args, split_id, train_sample_ids, test_sample_ids, val_save_dir, checkp
         normalize=args.prior_sampler != "gaussian",
     )
 
-    modules_linear = [n for n, m in model.named_modules() if "linear" in type(m).__name__.lower()]
-    from peft import LoraConfig
-    config = LoraConfig(
-        r=8,
-        lora_alpha=16,
-        lora_dropout=0.05,
-        bias="none",
-        target_modules = modules_linear[:-4],            
-        modules_to_save = modules_linear[-4:]
-        )
-    from peft import get_peft_model
-    #model = MLP()
-    #model = get_peft_model(model, config)
-    #model.print_trainable_parameters()
-    #mem log
+
     init_accelerator()
     device_name = torch.accelerator.current_accelerator().type if hasattr(torch, "accelerator") else "cuda"
     device_module = getattr(torch, device_name, torch.cuda)
     accelerator_memory_init = device_module.max_memory_allocated()
     accelerator_memory_log = []
-    
-    '''
-    if torch.cuda.device_count() > 1:
-        print("使用", torch.cuda.device_count(), "块GPU")
-        model = nn.DataParallel(model)
-    # model = model.cuda()
-    '''
         
     # 2. 加载权重
     checkpoint_path = os.path.join(checkpoint_load_dir, "pearson_best.pth")
@@ -319,7 +314,7 @@ if __name__ == '__main__':
     parser.add_argument('--backbone', type=str, default="spatial_transformer")
     parser.add_argument('--hidden_dim', type=int, default=128)
     parser.add_argument('--pairwise_hidden_dim', type=int, default=128)
-    parser.add_argument('--n_layers', type=int, default=8)
+    parser.add_argument('--n_layers', type=int, default=4)
     parser.add_argument('--dropout', type=float, default=0.2)
     parser.add_argument('--attn_dropout', type=float, default=0.2)
     parser.add_argument('--n_neighbors', type=int, default=16)
@@ -373,8 +368,6 @@ if __name__ == '__main__':
     if args.use_wandb:
         wandb.init(project="spatial_transcriptomics", name=exp_code)
         wandb.config.update(args)
-
-    pprint(args)
 
     if args.datasets[0] == "all":
         args.datasets = ["SKCM", "PAAD", "PRAD", "IDC", "READ", "LUNG", "HCC", "COAD", "LYMPH_IDC", "CCRCC"]
