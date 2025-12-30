@@ -86,7 +86,7 @@ def embed_tiles(dataloader,
     for batch_idx, batch in tqdm(enumerate(dataloader), total=len(dataloader), desc='Embedding Tiles', ncols=100):
         batch = post_collate_fn(batch)
         imgs = batch['imgs'].to(device)
-        with torch.inference_mode(), torch.cuda.amp.autocast(dtype=precision):
+        with torch.inference_mode(), torch.amp.autocast(dtype=precision):
             if use_coords:
                 embeddings = model(imgs, batch['coords'].to(device))
             else:
@@ -231,7 +231,7 @@ if __name__ == "__main__":
     parser.add_argument('--precision', type=str, default='fp32', help='Precision (fp32 or fp16)')
     parser.add_argument('--img_resize', type=int, default=224, help='Image resizing (-1 to not resize)')
     parser.add_argument('--batch_size', type=int, default=128, help='Batch size')
-    parser.add_argument('--num_workers', type=int, default=1, help='Number of workers for dataloader')
+    parser.add_argument('--num_workers', type=int, default=16, help='Number of workers for dataloader')
 
     parser.add_argument('--gene_list', type=str, default='var_50genes.json')
     parser.add_argument('--method', type=str, default='random-forest', help='random-forest or ridge')

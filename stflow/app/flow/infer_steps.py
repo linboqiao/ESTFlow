@@ -43,6 +43,15 @@ def init_accelerator():
     nn.Linear(1, 1).to(device_name)
 
 
+def strip_module_prefix(state):
+    from collections import OrderedDict
+    new_state = OrderedDict()
+    for k, v in state.items():
+        nk = k[7:] if k.startswith("module.") else k
+        new_state[nk] = v
+    return new_state
+
+
 def main(args, split_id, train_sample_ids, test_sample_ids, val_save_dir, checkpoint_save_dir, checkpoint_load_dir=None):
     normalize_method = get_normalize_method(args.normalize_method)
 
@@ -55,12 +64,6 @@ def main(args, split_id, train_sample_ids, test_sample_ids, val_save_dir, checkp
             gene_list_path=os.path.join(args.source_dataroot, args.dataset, args.gene_list),
         ) for sample_id in train_sample_ids
     ]
-    train_dataset = MultiHESTDataset(sample_id_paths,
-                                     distribution=args.patch_distribution, 
-                                     normalize_method=normalize_method,
-                                     sample_times=args.sample_times)
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=padding_batcher())
-
     # using the same train sample ids for validation
     sample_id_paths = [
         HESTDatasetPath(
@@ -92,6 +95,7 @@ def main(args, split_id, train_sample_ids, test_sample_ids, val_save_dir, checkp
         normalize=args.prior_sampler != "gaussian",
     )
 
+
     modules_linear = [n for n, m in model.named_modules() if "linear" in type(m).__name__.lower()]
     from peft import LoraConfig
     config = LoraConfig(
@@ -107,6 +111,7 @@ def main(args, split_id, train_sample_ids, test_sample_ids, val_save_dir, checkp
     #model = get_peft_model(model, config)
     #model.print_trainable_parameters()
     #mem log
+
     init_accelerator()
     device_name = torch.accelerator.current_accelerator().type if hasattr(torch, "accelerator") else "cuda"
     device_module = getattr(torch, device_name, torch.cuda)
@@ -125,109 +130,51 @@ def main(args, split_id, train_sample_ids, test_sample_ids, val_save_dir, checkp
     # 2. 加载权重
     if checkpoint_load_dir != None:
         checkpoint_path = os.path.join(checkpoint_load_dir, "pearson_best.pth")
-        state_dict = torch.load(checkpoint_path, map_location="cpu")  # 或 "cuda"
-        model.load_state_dict(state_dict)
-        val_perf_dict, pred_dump = test(args, diffusier, model, val_loaders, return_all=True)
-        best_pearson = val_perf_dict["all"]['pearson_mean']
-        best_val_dict = val_perf_dict
-        for patch_name, dataset_res in val_perf_dict.items():
-            with open(os.path.join(val_save_dir, f'{patch_name}_results.json'), 'w') as f:
-                json.dump(dataset_res, f, sort_keys=True, indent=4)
-            with open(os.path.join(val_save_dir, f'{patch_name}_results_pearson_{best_pearson:.6f}.json'), 'w') as f:
-                json.dump(dataset_res, f, sort_keys=True, indent=4)
+        state = torch.load(checkpoint_path, map_location="cpu")  # 或 "cuda"
+        state = strip_module_prefix(state)
+        model.load_state_dict(state, strict=True)
+        #model.load_state_dict(state)
+        #val_perf_dict, pred_dump = test(args, diffusier, model, val_loaders, return_all=True)
+        #best_pearson = val_perf_dict["all"]['pearson_mean']
     
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
-    print("Training")
+    print("Testing")
     tic_total = perf_counter()
 
-    best_pearson, best_val_dict = -1, None
+    val_pearsons = []
     early_stop_step = 0
+    max_steps = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 16, 32, 64]
+    # max_steps = [3, 5, 6, 7, 9, 10]
+
+    
     epoch_iter = tqdm(range(1, args.epochs + 1), ncols=100)
-    for epoch in epoch_iter:
-        avg_loss = 0
-        model.train()
+    for steps in max_steps:
 
-        for step, batch in enumerate(train_loader):
-            batch = [x.to(device) for x in batch]
-            img_features, coords, gene_exp = batch
-
-            noisy_exp, t_steps = diffusier.corrupt_exp(gene_exp)
-            pred_exp, loss = model(
-                exp=noisy_exp,
-                img_features=img_features,
-                coords=coords,
-                labels=gene_exp,
-                t_steps=t_steps
-            )
-
-            optimizer.zero_grad()
-            model.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_norm)
-            optimizer.step()
-
-            mem_train = device_module.memory_allocated() - accelerator_memory_init
-            accelerator_memory_log.append(mem_train)
-            # print(f"memory train: {mem_train // 2**20}MB")
-
-            if args.use_wandb:
-                wandb.log({f"{args.dataset}/Train/{split_id}/loss": loss.cpu().item()})
-                wandb.log({f"{args.dataset}/Train/{split_id}/mem ": mem_train})
-
-            avg_loss += loss.cpu().item()
-        
-        avg_loss /= len(train_loader)
-        epoch_iter.set_description(f"epoch: {epoch}, avg_loss: {avg_loss:.3f}")
-
-        #if args.save_step > 0 and epoch % args.save_step == 0:
-        #    torch.save(model.state_dict(), os.path.join(checkpoint_save_dir, f"{epoch}.pth"))
-
-        if epoch % args.eval_step == 0 or epoch == args.epochs:
+        if True:
+            args.n_sample_steps = steps + 2
+            print("steps: ", steps)
+            start = time()
             val_perf_dict, pred_dump = test(args, diffusier, model, val_loaders, return_all=True)
-            if val_perf_dict["all"]['pearson_mean'] > best_pearson:
+            end = time()
+            time_sec = end - start
+            if True:
                 best_pearson = val_perf_dict["all"]['pearson_mean']
                 best_val_dict = val_perf_dict
                 for patch_name, dataset_res in val_perf_dict.items():
-                    with open(os.path.join(val_save_dir, f'{patch_name}_results.json'), 'w') as f:
+                    with open(os.path.join(val_save_dir, f'{patch_name}_results_steps_{steps}_pearson_{best_pearson}_timesec_{time_sec}.json'), 'w') as f:
                         json.dump(dataset_res, f, sort_keys=True, indent=4)
-                    with open(os.path.join(val_save_dir, f'{patch_name}_results_pearson_{best_pearson:.6f}.json'), 'w') as f:
-                        json.dump(dataset_res, f, sort_keys=True, indent=4)
-                        
-                torch.save(model.state_dict(), os.path.join(checkpoint_save_dir, f"pearson_{best_pearson:.6f}.pth"))
-                torch.save(model.state_dict(), os.path.join(checkpoint_save_dir, "pearson_best.pth"))
-                
-                # save_pkl(os.path.join(val_save_dir, 'inference_dump.pkl'), pred_dump)
-                early_stop_step = 0
                 print(f"pearson_mean: {best_pearson}")
-
-            else:
-                early_stop_step += 1
-                if early_stop_step >= args.early_stop_step:
-                    print(f"pearson_mean: {best_pearson}")
-                    print("Early stopping")
-                    break
-
-            if args.use_wandb:
-                for patch_name, dataset_res in val_perf_dict.items():
-                    wandb.log({
-                        f"{args.dataset}/Val/{split_id}/{patch_name}/pearson_mean": dataset_res['pearson_mean'],
-                        f"{args.dataset}/Val/{split_id}/{patch_name}/pearson_std": dataset_res['pearson_std'],
-                        f"{args.dataset}/Val/{split_id}/{patch_name}/l2_error_q1": dataset_res['l2_error_q1'],
-                        f"{args.dataset}/Val/{split_id}/{patch_name}/l2_error_q2": dataset_res['l2_error_q2'],
-                        f"{args.dataset}/Val/{split_id}/{patch_name}/l2_error_q3": dataset_res['l2_error_q3'],
-                        f"{args.dataset}/Val/{split_id}/{patch_name}/r2_score_q1": dataset_res['r2_score_q1'],
-                        f"{args.dataset}/Val/{split_id}/{patch_name}/r2_score_q2": dataset_res['r2_score_q2'],
-                        f"{args.dataset}/Val/{split_id}/{patch_name}/r2_score_q3": dataset_res['r2_score_q3'],
-                    })
-
+                
     toc_total = perf_counter()
 
-    accelerator_memory_final = device_module.max_memory_allocated()
-    accelerator_memory_avg = int(sum(accelerator_memory_log) / len(accelerator_memory_log))
-    print(f"memory avg: {accelerator_memory_avg // 2**20}MB")
-    print(f"memory max: {(accelerator_memory_final - accelerator_memory_init) // 2**20}MB")
-    print(f"total time: {toc_total - tic_total:.2f}s")
+
+    if False:
+        accelerator_memory_final = device_module.max_memory_allocated()
+        accelerator_memory_avg = int(sum(accelerator_memory_log) / len(accelerator_memory_log))
+        print(f"memory avg: {accelerator_memory_avg // 2**20}MB")
+        print(f"memory max: {(accelerator_memory_final - accelerator_memory_init) // 2**20}MB")
+        print(f"total time: {toc_total - tic_total:.2f}s")
     return best_val_dict["all"]
 
 
@@ -271,7 +218,7 @@ import gc
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--seed', type=int, default=1)
-    parser.add_argument('--datasets', nargs='+', default=["IDC"], help="all// LUNG, READ, HCC")
+    parser.add_argument('--datasets', nargs='+', default=["all"], help="all// LUNG, READ, HCC")
     parser.add_argument('--use_wandb', default=False)
     parser.add_argument('--source_dataroot', default="/nas/linbo/biospace/exps/20240112-His2ST/ESTFlow/dataset/hest-bench/")
     parser.add_argument('--embed_dataroot', type=str, default="/nas/linbo/biospace/exps/20240112-His2ST/ESTFlow/embed_data/hest-bench/")
@@ -280,7 +227,7 @@ if __name__ == '__main__':
     #parser.add_argument('--load_dir', type=str, default=None, help="checkpoint_dir_load")
     parser.add_argument('--load_dir', type=str, default="/nas/linbo/biospace/exps/20240112-His2ST/ESTFlow/results_dir/hest-bench/multiview_uni_v1_official_spatial_transformer", help="checkpoint_dir_load")
     parser.add_argument('--feature_encoder', type=str, default='uni_v1_official', help="uni_v1_official | resnet50_trunc | ciga | gigapath")
-    parser.add_argument('--normalize_method', type=str, default="log1p")
+    parser.add_argument('--normalize_method', type=str, default="log1p")    
     parser.add_argument('--exp_code', type=str, default="multiview")
     #parser.add_argument('--multiview', default=False)
 
@@ -290,7 +237,7 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int, default=1, help='Batch size')
     parser.add_argument('--lr', type=float, default=5e-4)
     parser.add_argument('--early_stop_step', type=int, default=10)
-    parser.add_argument('--epochs', type=int, default=-1)
+    parser.add_argument('--epochs', type=int, default=100000)
     parser.add_argument('--clip_norm', type=float, default=1.)
     parser.add_argument('--save_step', type=int, default=1)
     parser.add_argument('--eval_step', type=int, default=1)
@@ -300,7 +247,7 @@ if __name__ == '__main__':
     parser.add_argument('--n_genes', type=int, default=50)    
 
     # flow matching hyperparameters
-    parser.add_argument('--n_sample_steps', type=int, default=5)
+    parser.add_argument('--n_sample_steps', type=int, default=32)
     parser.add_argument('--prior_sampler', type=str, default="zinb", help="gaussian | uniform | zero | zinb")
     parser.add_argument('--zinb_logits', type=float, default=0.1)
     parser.add_argument('--zinb_total_count', type=float, default=1)
@@ -335,7 +282,7 @@ if __name__ == '__main__':
         exp_code = f"{args.backbone}::{get_current_time()}"
     else:
         exp_code = args.exp_code + f"_{args.feature_encoder}" + f"_{args.backbone}::{get_current_time()}"
-        exp_code = args.exp_code + f"_{args.feature_encoder}" + f"_{args.backbone}"
+        exp_code = args.exp_code + f"_{args.feature_encoder}" + f"_{args.backbone}"    
     
     save_dir = os.path.join(args.save_dir, exp_code)
     os.makedirs(save_dir, exist_ok=True)

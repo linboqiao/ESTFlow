@@ -54,7 +54,7 @@ def test(args, diffusier, model, loader_list, return_all=False):
     for loader in loader_list:
         cur_pred, cur_gt = [], []
 
-        for step, batch in enumerate(loader):
+        for k, batch in enumerate(loader):
             batch = [x.to(args.device) for x in batch]
             img_features, coords, labels = batch
             assert img_features.shape[0] == 1, "Batch size must be 1 for inference"

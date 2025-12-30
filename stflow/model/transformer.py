@@ -172,49 +172,6 @@ class TransformerBlock(nn.Module):
 
 import torch
 import faiss                   # pip install faiss-gpu
-
-def knn_faiss_gpu_bak(coords, n_neighbors=10, similarity="L2"):
-    """
-    coords: [N, d] torch.Tensor (必须在 GPU 上, dtype=float32, contiguous)
-    n_neighbors: int, 每个点取多少邻居（不含自身）
-
-    return:
-        knn_dists: [N, n_neighbors] torch.Tensor
-        knn_indices: [N, n_neighbors] torch.Tensor
-    """
-    assert coords.is_cuda, "coords 必须在 GPU 上"
-    assert coords.dtype == torch.float32, "coords 必须是 float32"
-    coords = coords.contiguous()  # 确保内存连续
-    N, d = coords.shape
-
-    # GPU 资源管理器
-    res = faiss.StandardGpuResources()
-
-    # 建立 GPU Index
-    if similarity == "L2":
-        index = faiss.GpuIndexFlatL2(res, d)   # 精确 L2 KNN
-    elif similarity == "dot":
-        index = faiss.GpuIndexFlatIP(res, d)   # 内积（dot product）
-    ptr = faiss.cast_integer_to_float_ptr(coords.data_ptr())  # GPU pointer
-
-    # 把 coords 加入索引
-    coords_np = coords.detach().cpu().numpy()  # 必须 CPU numpy
-    index.add(coords_np) # pyright: ignore[reportCallIssue]
-
-    # 查询最近 n_neighbors+1 个（第一个是自己）
-    dists, inds = index.search(coords_np, n_neighbors + 1) # type: ignore
-
-    # 转成 torch tensor（仍在 GPU）
-    dists = torch.from_numpy(dists).to(coords.device)
-    inds = torch.from_numpy(inds).to(coords.device)
-
-    # 去掉自己
-    dists = dists[:, 1:]
-    inds = inds[:, 1:]
-    del res
-
-    return dists, inds
-
 import gc
 import numpy as np
 def knn_faiss_auto(coords, n_neighbors=10, similarity="L2", temp_memory=256*1024*1024, batch_size=None, force_cpu=False):
@@ -355,11 +312,13 @@ class SpatialTransformer(nn.Module):
         idxs = nearest_indices
 
         if self.multiview:
-            dist_values, nearest_indices_dot = knn_faiss_auto(features, n_neighbors=n_neighbors, similarity="dot")
+            #dist_values, nearest_indices_dot = knn_faiss_auto(features, n_neighbors=n_neighbors, similarity="dot")
+            #idxs = torch.cat([nearest_indices, nearest_indices_dot], dim=1)  # 按列拼接
             
             dist_values, nearest_indices_L2 = knn_faiss_auto(features, n_neighbors=n_neighbors, similarity="L2")
+            idxs = torch.cat([nearest_indices, nearest_indices_L2], dim=1)  # 按列拼接
 
-            idxs = torch.cat([nearest_indices, nearest_indices_dot, nearest_indices_L2], dim=1)  # 按列拼接
+            #idxs = torch.cat([nearest_indices, nearest_indices_dot, nearest_indices_L2], dim=1)  # 按列拼接
 
         return idxs
 
