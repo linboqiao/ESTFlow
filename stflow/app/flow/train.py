@@ -10,7 +10,7 @@ from operator import itemgetter
 
 import torch
 
-from stflow.utils import set_random_seed, get_current_time, merge_fold_results
+from stflow.utils import set_random_seed, get_current_time, merge_fold_results, init_distributed_mode
 from stflow.data.dataset import HESTDatasetPath, MultiHESTDataset, padding_batcher, HESTDataset
 from stflow.data.normalize_utils import get_normalize_method
 from stflow.model.denoiser import Denoiser
@@ -18,7 +18,7 @@ from stflow.flow.interpolant import Interpolant
 from stflow.app.flow.test import test
 from stflow.hest_utils.utils import save_pkl
 
-from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.nn.parallel import DistributedDataParallel as NativeDDP
 from torch.utils.data import DataLoader, DistributedSampler, TensorDataset
 
 # suppress all warnings
@@ -59,7 +59,9 @@ def main(args, split_id, train_sample_ids, test_sample_ids, val_save_dir, checkp
                                      distribution=args.patch_distribution, 
                                      normalize_method=normalize_method,
                                      sample_times=args.sample_times)
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=padding_batcher())
+    
+    train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=padding_batcher(),sampler=train_sampler)
 
     # using the same train sample ids for validation
     sample_id_paths = [
@@ -83,6 +85,14 @@ def main(args, split_id, train_sample_ids, test_sample_ids, val_save_dir, checkp
     ]
 
     model = Denoiser(args)
+    model.cuda()
+    if args.distributed:
+        if args.rank == 0:
+            print("Using native Torch DistributedDataParallel.")
+        model = NativeDDP(model, device_ids=[args.local_rank]) 
+    else:
+        device = args.device
+        model = model.to(device)
 
     diffusier = Interpolant(
         args.prior_sampler, 
@@ -113,20 +123,18 @@ def main(args, split_id, train_sample_ids, test_sample_ids, val_save_dir, checkp
     accelerator_memory_init = device_module.max_memory_allocated()
     accelerator_memory_log = []
     
-    device = args.device
-    model = model.to(device)
     '''
     if torch.cuda.device_count() > 1:
         print("使用", torch.cuda.device_count(), "块GPU")
         model = nn.DataParallel(model)
     # model = model.cuda()
     '''
-
+        
     # 2. 加载权重
     checkpoint_path = os.path.join(checkpoint_load_dir, "pearson_best.pth")
     if os.path.exists(checkpoint_path):
         state_dict = torch.load(checkpoint_path, map_location="cpu")  # 或 "cuda"
-        model.load_state_dict(state_dict)
+        model.module.load_state_dict(state_dict)
         val_perf_dict, pred_dump = test(args, diffusier, model, val_loaders, return_all=True)
         best_pearson = val_perf_dict["all"]['pearson_mean']
         for patch_name, dataset_res in val_perf_dict.items():
@@ -148,7 +156,7 @@ def main(args, split_id, train_sample_ids, test_sample_ids, val_save_dir, checkp
         model.train()
 
         for step, batch in enumerate(train_loader):
-            batch = [x.to(device) for x in batch]
+            batch = [x.to(args.device) for x in batch]
             img_features, coords, gene_exp = batch
 
             noisy_exp, t_steps = diffusier.corrupt_exp(gene_exp)
@@ -319,7 +327,27 @@ if __name__ == '__main__':
     parser.add_argument('--feature_dim', type=int, default=1024, help="uni:1024, ciga:512")
     parser.add_argument('--norm', type=str, default='layer', help="batch | layer")
     parser.add_argument('--activation', type=str, default='swiglu', help="relu | gelu | swiglu")
+    parser.add_argument("--local-rank", default=-1, type=int)
+    parser.add_argument('--gpus', type=int,
+                    help='number of gpus to use (only applicable to non-distributed training)')
+    parser.add_argument('--dist-backend', type=str, default='nccl')
+    parser.add_argument('--port', type=int, default='12345')
     args = parser.parse_args()
+
+    args.distributed = False
+    if 'WORLD_SIZE' in os.environ:
+        args.distributed = int(os.environ['WORLD_SIZE']) > 1
+    init_distributed_mode(args)
+    if args.distributed:
+        # args.device = 'cuda:%d' % args.local_rank
+        # torch.cuda.set_device(args.local_rank)
+        # torch.distributed.init_process_group(backend='nccl', init_method='env://')
+        # args.world_size = torch.distributed.get_world_size()
+        # args.rank = torch.distributed.get_rank()
+        print('Training in distributed mode with multiple processes, 1 GPU per process. Process %d, total %d.'
+                     % (args.rank, args.world_size))
+    else:
+        print('Training with a single process on 1 GPUs.')
 
     args.feature_dim = {
         "uni_v1_official": 1024,

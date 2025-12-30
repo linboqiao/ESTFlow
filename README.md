@@ -2,6 +2,7 @@
 
 To run the code:
 ```
+torchrun --nproc_per_node=8  -m stflow.app.flow.train
 python -m stflow.app.hest.benchmark
 python -m stflow.app.flow.train
 ```

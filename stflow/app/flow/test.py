@@ -65,15 +65,22 @@ def test(args, diffusier, model, loader_list, return_all=False):
             )[:, None].expand(args.n_sample_steps+1, exp_t1.shape[0]).to(args.device)
 
             for step, (t1, t2) in enumerate(zip(ts[:-1], ts[1:])):
-                pred = model.inference(
-                    exp_t1, img_features, coords, 
-                    t1, predict=True
-                )
+                if args.distributed:
+                    pred = model.module.inference(
+                        exp_t1, img_features, coords, 
+                        t1, predict=True
+                    )
+                else:
+                    pred = model.inference(
+                        exp_t1, img_features, coords, 
+                        t1, predict=True
+                    )
                 d_t = t2 - t1
 
-                exp_t1 = diffusier.denoise(pred, exp_t1, t1, d_t)
-                if step == args.n_sample_steps-1:
+                if step == args.n_sample_steps - 2:
                     break
+                else:
+                    exp_t1 = diffusier.denoise(pred, exp_t1, t1, d_t)
 
             sample = pred
             cur_pred.append(sample.squeeze(0).cpu().numpy())
