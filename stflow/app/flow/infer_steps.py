@@ -244,7 +244,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_workers', type=int, default=1, help='Number of workers for dataloader')
     parser.add_argument('--loss_func', type=str, default='mse', help="mse | mae | pearson")
     parser.add_argument('--patch_distribution', type=str, default='uniform')
-    parser.add_argument('--n_genes', type=int, default=50)    
+    parser.add_argument('--n_genes', type=int, default=50)
 
     # flow matching hyperparameters
     parser.add_argument('--n_sample_steps', type=int, default=32)
@@ -266,6 +266,8 @@ if __name__ == '__main__':
     parser.add_argument('--norm', type=str, default='layer', help="batch | layer")
     parser.add_argument('--activation', type=str, default='swiglu', help="relu | gelu | swiglu")
     args = parser.parse_args()
+
+    args.distributed = False
 
     args.feature_dim = {
         "uni_v1_official": 1024,

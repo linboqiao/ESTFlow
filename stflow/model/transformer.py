@@ -267,7 +267,7 @@ def knn_faiss_auto(coords, n_neighbors=10, similarity="L2", temp_memory=256*1024
 
     # --- 如果强制用 CPU ---
     if force_cpu:
-        return cpu_knn()
+        return cpu_knn(coords, n_neighbors=n_neighbors, similarity=similarity, batch_size=batch_size)
 
     # --- GPU 版本 ---
     try:
@@ -350,7 +350,7 @@ class SpatialTransformer(nn.Module):
 
             dist_values, nearest_indices = rel_dist.topk(n_neighbors, dim = -1, largest = False)
         else:
-            dist_values, nearest_indices = knn_faiss_auto(coords, n_neighbors=n_neighbors)
+            dist_values, nearest_indices = knn_faiss_auto(coords, n_neighbors=n_neighbors, force_cpu=True)
 
         idxs = nearest_indices
 
@@ -358,7 +358,7 @@ class SpatialTransformer(nn.Module):
             #dist_values, nearest_indices_dot = knn_faiss_auto(features, n_neighbors=n_neighbors, similarity="dot")
             #idxs = torch.cat([nearest_indices, nearest_indices_dot], dim=1)  # 按列拼接
             
-            dist_values, nearest_indices_L2 = knn_faiss_auto(features, n_neighbors=n_neighbors, similarity="L2")
+            dist_values, nearest_indices_L2 = knn_faiss_auto(features, n_neighbors=n_neighbors, similarity="L2", force_cpu=True)
             idxs = torch.cat([nearest_indices, nearest_indices_L2], dim=1)  # 按列拼接
 
             #idxs = torch.cat([nearest_indices, nearest_indices_dot, nearest_indices_L2], dim=1)  # 按列拼接
