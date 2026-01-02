@@ -124,8 +124,8 @@ def main(args, split_id, train_sample_ids, test_sample_ids, val_save_dir, checkp
         zi_logits=args.zinb_zi_logits,
         normalize=args.prior_sampler != "gaussian",
     )
-
     
+    best_pearson, best_val_dict = -1, None
     # 2. 加载权重
     checkpoint_path = os.path.join(checkpoint_load_dir, "pearson_best.pth")
     if os.path.exists(checkpoint_path):
@@ -151,7 +151,8 @@ def main(args, split_id, train_sample_ids, test_sample_ids, val_save_dir, checkp
 
         val_perf_dict, pred_dump = test(args, diffusier, model, val_loaders, return_all=True)
         best_pearson = val_perf_dict["all"]['pearson_mean']
-        if args.local_rank==0:
+        best_val_dict = val_perf_dict
+        if args.local_rank<=0:
             for patch_name, dataset_res in val_perf_dict.items():
                 with open(os.path.join(val_save_dir, f'{patch_name}_results.json'), 'w') as f:
                     json.dump(dataset_res, f, sort_keys=True, indent=4)
@@ -171,9 +172,8 @@ def main(args, split_id, train_sample_ids, test_sample_ids, val_save_dir, checkp
     print("Training")
     tic_total = perf_counter()
 
-    best_pearson, best_val_dict = -1, None
     early_stop_step = 0
-    if args.local_rank == 0:
+    if args.local_rank <= 0:
         epoch_iter = tqdm(range(1, args.epochs + 1), ncols=100)
     else:
         epoch_iter = range(1, args.epochs + 1)
@@ -210,11 +210,11 @@ def main(args, split_id, train_sample_ids, test_sample_ids, val_save_dir, checkp
             avg_loss += loss.cpu().item()
         
         avg_loss /= len(train_loader)
-        if args.local_rank == 0:
+        if args.local_rank <= 0:
             epoch_iter.set_description(f"epoch: {epoch}, avg_loss: {avg_loss:.3f}, best_pearson: {best_pearson:.3f}")
 
         if epoch % args.eval_step == 0 or epoch == args.epochs:
-            if args.local_rank == 0:
+            if args.local_rank <= 0:
                 val_perf_dict, pred_dump = test(args, diffusier, model, val_loaders, return_all=True)
                 if val_perf_dict["all"]['pearson_mean'] > best_pearson:
                     best_pearson = val_perf_dict["all"]['pearson_mean']
@@ -224,18 +224,20 @@ def main(args, split_id, train_sample_ids, test_sample_ids, val_save_dir, checkp
                             json.dump(dataset_res, f, sort_keys=True, indent=4)
                         with open(os.path.join(val_save_dir, f'{patch_name}_results_pearson_{best_pearson:.6f}.json'), 'w') as f:
                             json.dump(dataset_res, f, sort_keys=True, indent=4)
-                            
-                    torch.save(model.module.state_dict(), os.path.join(checkpoint_save_dir, f"pearson_{best_pearson:.6f}.pth"))
-                    torch.save(model.module.state_dict(), os.path.join(checkpoint_save_dir, "pearson_best.pth"))
-                    
+                    if args.local_rank == 0:
+                        torch.save(model.module.state_dict(), os.path.join(checkpoint_save_dir, f"pearson_{best_pearson:.6f}.pth"))
+                        torch.save(model.module.state_dict(), os.path.join(checkpoint_save_dir, "pearson_best.pth"))                    
+                    elif args.local_rank < 0:
+                        torch.save(model.state_dict(), os.path.join(checkpoint_save_dir, f"pearson_{best_pearson:.6f}.pth"))
+                        torch.save(model.state_dict(), os.path.join(checkpoint_save_dir, "pearson_best.pth"))
                     early_stop_step = 0
 
-            else:
-                early_stop_step += 1
-                if early_stop_step >= args.early_stop_step:
-                    print(f"pearson_mean: {best_pearson}")
-                    print("Early stopping")
-                    break
+                else:
+                    early_stop_step += 1
+                    if early_stop_step >= args.early_stop_step:
+                        print(f"pearson_mean: {best_pearson}")
+                        print("Early stopping")
+                        break
 
 
     '''
@@ -246,10 +248,15 @@ def main(args, split_id, train_sample_ids, test_sample_ids, val_save_dir, checkp
     print(f"memory max: {(accelerator_memory_final - accelerator_memory_init) // 2**20}MB")
     print(f"total time: {toc_total - tic_total:.2f}s")
     '''
+    torch.cuda.empty_cache()
+    gc.collect()
+    
     if args.distributed:
         dist.barrier()
-    if args.local_rank == 0:
+    if args.local_rank <= 0:
         return best_val_dict["all"]
+    else:
+        return None
 
 
 def run(args):
@@ -278,6 +285,8 @@ def run(args):
             checkpoint_load_dir = None
 
         results = main(args, i, train_sample_ids, test_sample_ids, kfold_save_dir, checkpoint_save_dir, checkpoint_load_dir)
+        if results is None:
+            return
         all_split_results.append(results)
 
     kfold_results = merge_fold_results(all_split_results)
@@ -292,7 +301,7 @@ import gc
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--seed', type=int, default=1)
-    parser.add_argument('--datasets', nargs='+', default=["IDC"], help="all// LUNG, READ, HCC")
+    parser.add_argument('--datasets', nargs='+', default=["all"], help="all// LUNG, READ, HCC")
     parser.add_argument('--source_dataroot', default="/nas/linbo/biospace/exps/20240112-His2ST/ESTFlow/dataset/hest-bench/")
     parser.add_argument('--embed_dataroot', type=str, default="/nas/linbo/biospace/exps/20240112-His2ST/ESTFlow/embed_data/hest-bench/")
     parser.add_argument('--gene_list', type=str, default='var_50genes.json')
