@@ -184,30 +184,33 @@ def main(args, split_id, train_sample_ids, test_sample_ids, val_save_dir, checkp
 
         for step, batch in enumerate(train_loader):
             img_features, coords, gene_exp = [x.to(args.device) for x in batch]
-            # img_features, coords, gene_exp = batch
 
-            noisy_exp, t_steps = diffusier.corrupt_exp(gene_exp)
-            pred_exp, loss = model(
-                exp=noisy_exp,
-                img_features=img_features,
-                coords=coords,
-                labels=gene_exp,
-                t_steps=t_steps
-            )
+            N_randt = 10
+            loss_rant = 0
+            for idxt in range(N_randt):
+                noisy_exp, t_steps = diffusier.corrupt_exp(gene_exp)
+                pred_exp, loss = model(
+                    exp=noisy_exp,
+                    img_features=img_features,
+                    coords=coords,
+                    labels=gene_exp,
+                    t_steps=t_steps
+                )
 
-            optimizer.zero_grad()
-            model.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_norm)
-            optimizer.step()
+                optimizer.zero_grad()
+                model.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_norm)
+                optimizer.step()
+                loss_rant += loss.cpu().item()
+
+            avg_loss += loss_rant/N_randt
 
             '''
             mem_train = device_module.memory_allocated() - accelerator_memory_init
             accelerator_memory_log.append(mem_train)
             print(f"memory train: {mem_train // 2**20}MB")
             '''
-
-            avg_loss += loss.cpu().item()
         
         avg_loss /= len(train_loader)
         if args.local_rank <= 0:
@@ -387,7 +390,7 @@ if __name__ == '__main__':
     load_dir = args.load_dir
 
     if args.datasets[0] == "all":
-        args.datasets = ["SKCM", "PAAD", "PRAD", "IDC", "READ", "LUNG", "HCC", "COAD", "LYMPH_IDC", "CCRCC"]
+        args.datasets = ["IDC", "PRAD", "PAAD", "SKCM", "COAD", "READ", "CCRCC",  "HCC", "LUNG", "LYMPH_IDC"]
 
     for dataset in args.datasets:
         args.dataset = dataset

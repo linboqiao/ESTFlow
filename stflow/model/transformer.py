@@ -359,9 +359,7 @@ class SpatialTransformer(nn.Module):
             #idxs = torch.cat([nearest_indices, nearest_indices_dot], dim=1)  # 按列拼接
             
             dist_values, nearest_indices_L2 = knn_faiss_auto(features, n_neighbors=n_neighbors, similarity="L2", force_cpu=True)
-            idxs = torch.cat([nearest_indices, nearest_indices_L2], dim=1)  # 按列拼接
-
-            #idxs = torch.cat([nearest_indices, nearest_indices_dot, nearest_indices_L2], dim=1)  # 按列拼接
+            idxs = torch.cat([nearest_indices.to(features.device), nearest_indices_L2.to(features.device)], dim=1)  # 按列拼接
 
         return idxs
 

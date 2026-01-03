@@ -242,7 +242,7 @@ if __name__ == '__main__':
     pprint(args)
 
     if args.datasets[0] == "all":
-        args.datasets = ["SKCM", "PAAD", "PRAD", "IDC", "READ", "LUNG", "HCC", "COAD", "LYMPH_IDC", "CCRCC"]
+        args.datasets = ["IDC", "PRAD", "PAAD", "SKCM", "COAD", "READ", "CCRCC",  "HCC", "LUNG", "LYMPH_IDC"]
 
     for dataset in args.datasets:
         args.dataset = dataset
