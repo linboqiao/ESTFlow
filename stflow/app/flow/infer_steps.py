@@ -94,38 +94,9 @@ def main(args, split_id, train_sample_ids, test_sample_ids, val_save_dir, checkp
         zi_logits=args.zinb_zi_logits,
         normalize=args.prior_sampler != "gaussian",
     )
-
-
-    modules_linear = [n for n, m in model.named_modules() if "linear" in type(m).__name__.lower()]
-    from peft import LoraConfig
-    config = LoraConfig(
-        r=8,
-        lora_alpha=16,
-        lora_dropout=0.05,
-        bias="none",
-        target_modules = modules_linear[:-4],            
-        modules_to_save = modules_linear[-4:]
-        )
-    from peft import get_peft_model
-    #model = MLP()
-    #model = get_peft_model(model, config)
-    #model.print_trainable_parameters()
-    #mem log
-
-    init_accelerator()
-    device_name = torch.accelerator.current_accelerator().type if hasattr(torch, "accelerator") else "cuda"
-    device_module = getattr(torch, device_name, torch.cuda)
-    accelerator_memory_init = device_module.max_memory_allocated()
-    accelerator_memory_log = []
     
     device = args.device
     model = model.to(device)
-    '''
-    if torch.cuda.device_count() > 1:
-        print("使用", torch.cuda.device_count(), "块GPU")
-        model = nn.DataParallel(model)
-    # model = model.cuda()
-    '''
 
     # 2. 加载权重
     if checkpoint_load_dir != None:
@@ -133,48 +104,28 @@ def main(args, split_id, train_sample_ids, test_sample_ids, val_save_dir, checkp
         state = torch.load(checkpoint_path, map_location="cpu")  # 或 "cuda"
         state = strip_module_prefix(state)
         model.load_state_dict(state, strict=True)
-        #model.load_state_dict(state)
-        #val_perf_dict, pred_dump = test(args, diffusier, model, val_loaders, return_all=True)
-        #best_pearson = val_perf_dict["all"]['pearson_mean']
-    
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
     print("Testing")
     tic_total = perf_counter()
 
-    val_pearsons = []
-    early_stop_step = 0
     max_steps = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 16, 32, 64]
-    # max_steps = [3, 5, 6, 7, 9, 10]
-
     
-    epoch_iter = tqdm(range(1, args.epochs + 1), ncols=100)
+    all_best, best_val_dict = -1, []    
+
     for steps in max_steps:
+        args.n_sample_steps = steps
+        start = time()
+        val_perf_dict, pred_dump = test(args, diffusier, model, val_loaders, return_all=True)
+        end = time()
+        time_sec = end - start
+        best_pearson = val_perf_dict["all"]['pearson_mean']
+        if best_pearson>all_best:
+            best_val_dict = val_perf_dict
+        for patch_name, dataset_res in val_perf_dict.items():
+             with open(os.path.join(val_save_dir, f'{patch_name}_results_steps_{steps}_pearson_{best_pearson}_timesec_{time_sec}.json'), 'w') as f:
+                  json.dump(dataset_res, f, sort_keys=True, indent=4)
+        print(f"steps: {steps}, \tpearson_mean: {best_pearson}")
 
-        if True:
-            args.n_sample_steps = steps
-            print("\nsteps: ", steps)
-            start = time()
-            val_perf_dict, pred_dump = test(args, diffusier, model, val_loaders, return_all=True)
-            end = time()
-            time_sec = end - start
-            if True:
-                best_pearson = val_perf_dict["all"]['pearson_mean']
-                best_val_dict = val_perf_dict
-                for patch_name, dataset_res in val_perf_dict.items():
-                    with open(os.path.join(val_save_dir, f'{patch_name}_results_steps_{steps}_pearson_{best_pearson}_timesec_{time_sec}.json'), 'w') as f:
-                        json.dump(dataset_res, f, sort_keys=True, indent=4)
-                print(f"pearson_mean: {best_pearson}")
-                
-    toc_total = perf_counter()
-
-
-    if False:
-        accelerator_memory_final = device_module.max_memory_allocated()
-        accelerator_memory_avg = int(sum(accelerator_memory_log) / len(accelerator_memory_log))
-        print(f"memory avg: {accelerator_memory_avg // 2**20}MB")
-        print(f"memory max: {(accelerator_memory_final - accelerator_memory_init) // 2**20}MB")
-        print(f"total time: {toc_total - tic_total:.2f}s")
     return best_val_dict["all"]
 
 
@@ -207,7 +158,7 @@ def run(args):
         all_split_results.append(results)
 
     kfold_results = merge_fold_results(all_split_results)
-    with open(os.path.join(args.save_dir, f'results_kfold.json'), 'w') as f:
+    with open(os.path.join(args.save_dir, f'results_kfold_best_step.json'), 'w') as f:
         p_corrs = kfold_results['pearson_corrs']
         p_corrs = sorted(p_corrs, key=itemgetter('mean'), reverse=True)
         kfold_results['pearson_corrs'] = p_corrs
@@ -220,16 +171,15 @@ if __name__ == '__main__':
     parser.add_argument('--seed', type=int, default=1)
     parser.add_argument('--datasets', nargs='+', default=["all"], help="all// LUNG, READ, HCC")
     parser.add_argument('--use_wandb', default=False)
-    parser.add_argument('--source_dataroot', default="/nas/linbo/biospace/exps/20240112-His2ST/ESTFlow/dataset/hest-bench/")
-    parser.add_argument('--embed_dataroot', type=str, default="/nas/linbo/biospace/exps/20240112-His2ST/ESTFlow/embed_data/hest-bench/")
+    parser.add_argument('--source_dataroot', default="/path/to/data/")
+    parser.add_argument('--embed_dataroot', type=str, default="/path/to/embed_data/")
     parser.add_argument('--gene_list', type=str, default='var_50genes.json')
-    parser.add_argument('--save_dir', type=str, default="/nas/linbo/biospace/exps/20240112-His2ST/ESTFlow/results_dir/hest-bench/")
-    #parser.add_argument('--load_dir', type=str, default=None, help="checkpoint_dir_load")
-    parser.add_argument('--load_dir', type=str, default="/nas/linbo/biospace/exps/20240112-His2ST/ESTFlow/results_dir/hest-bench/multiview_uni_v1_official_spatial_transformer", help="checkpoint_dir_load")
+    parser.add_argument('--save_dir', type=str, default=None, help="checkpoint_dir_save")
+    parser.add_argument('--load_dir', type=str, default=None, help="checkpoint_dir_load")
     parser.add_argument('--feature_encoder', type=str, default='uni_v1_official', help="uni_v1_official | resnet50_trunc | ciga | gigapath")
     parser.add_argument('--normalize_method', type=str, default="log1p")    
     parser.add_argument('--exp_code', type=str, default="multiview")
-    #parser.add_argument('--multiview', default=False)
+    parser.add_argument('--multiview', default=True)
 
     # training hyperparameters
     parser.add_argument('--device', type=str, default="cuda")
@@ -289,11 +239,6 @@ if __name__ == '__main__':
     save_dir = os.path.join(args.save_dir, exp_code)
     os.makedirs(save_dir, exist_ok=True)
     load_dir = args.load_dir
-    
-    if args.use_wandb:
-        wandb.init(project="spatial_transcriptomics", name=exp_code)
-        wandb.config.update(args)
-
     pprint(args)
 
     if args.datasets[0] == "all":
@@ -306,15 +251,10 @@ if __name__ == '__main__':
         if args.load_dir is not None:
             args.load_dir = os.path.join(load_dir, dataset)
 
-        with open(os.path.join(args.save_dir, 'config.json'), 'w') as f:
+        with open(os.path.join(args.save_dir, 'config_infer_steps.json'), 'w') as f:
             json.dump(vars(args), f, sort_keys=True, indent=4)
 
         for i in range(1):
             run(args)
             torch.cuda.empty_cache()
             gc.collect()
-
-    print(f"--load_dir {save_dir}")
-
-    if args.use_wandb:
-        wandb.finish()

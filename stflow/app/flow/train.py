@@ -126,9 +126,9 @@ def main(args, split_id, train_sample_ids, test_sample_ids, val_save_dir, checkp
     )
     
     best_pearson, best_val_dict = -1, None
-    # 2. 加载权重
-    checkpoint_path = os.path.join(checkpoint_load_dir, "pearson_best.pth")
-    if os.path.exists(checkpoint_path):
+    # 2. 加载权重    
+    if checkpoint_load_dir is not None and os.path.exists(checkpoint_load_dir):
+        checkpoint_path = os.path.join(checkpoint_load_dir, "pearson_best.pth")
         map_location=f"cuda:{args.local_rank}"
         state_dict = torch.load(checkpoint_path, map_location="cpu")  # 或 "cpu"
 
@@ -183,8 +183,8 @@ def main(args, split_id, train_sample_ids, test_sample_ids, val_save_dir, checkp
         model.train()
 
         for step, batch in enumerate(train_loader):
-            batch = [x.to(args.device) for x in batch]
-            img_features, coords, gene_exp = batch
+            img_features, coords, gene_exp = [x.to(args.device) for x in batch]
+            # img_features, coords, gene_exp = batch
 
             noisy_exp, t_steps = diffusier.corrupt_exp(gene_exp)
             pred_exp, loss = model(
@@ -278,7 +278,7 @@ def run(args):
         os.makedirs(kfold_save_dir, exist_ok=True)        
         checkpoint_save_dir = os.path.join(kfold_save_dir, 'checkpoints')
         os.makedirs(checkpoint_save_dir, exist_ok=True)
-        if args.load_dir is not None:
+        if os.path.exists(args.load_dir):
             kfold_load_dir = os.path.join(args.load_dir, f'split{i}')
             checkpoint_load_dir = os.path.join(kfold_load_dir, 'checkpoints')
         else:
@@ -302,15 +302,16 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--seed', type=int, default=1)
     parser.add_argument('--datasets', nargs='+', default=["all"], help="all// LUNG, READ, HCC")
-    parser.add_argument('--source_dataroot', default="/nas/linbo/biospace/exps/20240112-His2ST/ESTFlow/dataset/hest-bench/")
-    parser.add_argument('--embed_dataroot', type=str, default="/nas/linbo/biospace/exps/20240112-His2ST/ESTFlow/embed_data/hest-bench/")
+    parser.add_argument('--source_dataroot', default="/path/to/data/")
+    parser.add_argument('--embed_dataroot', type=str, default="/path/to/embed_data/")
     parser.add_argument('--gene_list', type=str, default='var_50genes.json')
-    parser.add_argument('--save_dir', type=str, default="/nas/linbo/biospace/exps/20240112-His2ST/ESTFlow/results_dir/hest-bench/")
-    parser.add_argument('--load_dir', type=str, default="/nas/linbo/biospace/exps/20240112-His2ST/ESTFlow/results_dir/hest-bench/multiview_uni_v1_official_spatial_transformer", help="checkpoint_dir_load")
+    parser.add_argument('--save_dir', type=str, default=None, help="checkpoint_dir_save")
+    parser.add_argument('--load_dir', type=str, default=None, help="checkpoint_dir_load")
     parser.add_argument('--feature_encoder', type=str, default='uni_v1_official', help="uni_v1_official | resnet50_trunc | ciga | gigapath")
     parser.add_argument('--normalize_method', type=str, default="log1p")
-    parser.add_argument('--exp_code', type=str, default="multiview")
-    #parser.add_argument('--multiview', default=False)
+    #parser.add_argument('--exp_code', type=str, default="multiview")
+    parser.add_argument('--exp_code', type=str, default="womview")
+    parser.add_argument('--multiview', default=True)
 
     # training hyperparameters
     parser.add_argument('--device', type=str, default="cuda")
@@ -392,7 +393,7 @@ if __name__ == '__main__':
         args.dataset = dataset
         args.save_dir = os.path.join(save_dir, dataset)
         os.makedirs(args.save_dir, exist_ok=True)
-        if args.load_dir is not None:
+        if os.path.exists(args.load_dir):
             args.load_dir = os.path.join(load_dir, dataset)
 
         with open(os.path.join(args.save_dir, 'config.json'), 'w') as f:
