@@ -10,7 +10,7 @@ from operator import itemgetter
 
 import torch
 
-from stflow.utils import set_random_seed, get_current_time, merge_fold_results, init_distributed_mode
+from stflow.utils import set_random_seed, get_current_time, merge_fold_results, init_distributed_mode, print_env_vars, comprehensive_communication_test, cleanup_distributed
 from stflow.data.dataset import HESTDatasetPath, MultiHESTDataset, padding_batcher, HESTDataset
 from stflow.data.normalize_utils import get_normalize_method
 from stflow.model.denoiser import Denoiser
@@ -46,7 +46,7 @@ def init_accelerator():
 def main(args, split_id, train_sample_ids, test_sample_ids, val_save_dir, checkpoint_save_dir, checkpoint_load_dir=None):
     normalize_method = get_normalize_method(args.normalize_method)
 
-    print("Dataset Loading")
+    print("Dataset Loading")    
     sample_id_paths = [
         HESTDatasetPath(
             name=sample_id,
@@ -60,10 +60,10 @@ def main(args, split_id, train_sample_ids, test_sample_ids, val_save_dir, checkp
                                      normalize_method=normalize_method,
                                      sample_times=args.sample_times)
     if args.distributed:
-        train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
-        train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=padding_batcher(),sampler=train_sampler)
+        train_sampler = DistributedSampler(train_dataset)
+        train_loader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=padding_batcher(),sampler=train_sampler)
     else:
-        train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=padding_batcher())
+        train_loader = DataLoader(train_dataset, batch_size=args.batch_size, collate_fn=padding_batcher())
 
     # using the same train sample ids for validation
     sample_id_paths = [
@@ -76,7 +76,7 @@ def main(args, split_id, train_sample_ids, test_sample_ids, val_save_dir, checkp
         ) for sample_id in test_sample_ids
     ]
     val_loaders = [
-        torch.utils.data.DataLoader(
+        DataLoader(
             HESTDataset(
                 sample_id_path, distribution="constant_1.0", 
                 normalize_method=normalize_method,
@@ -109,10 +109,9 @@ def main(args, split_id, train_sample_ids, test_sample_ids, val_save_dir, checkp
 
     if args.distributed:
         if args.rank == 0:
-            print("Using native Torch DistributedDataParallel.")
+            #print("Using native Torch DistributedDataParallel.")
             pprint(args)
         model = NativeDDP(model, device_ids=[args.local_rank])
-        dist.barrier()
     else:
         device = args.device
         model = model.to(device)
@@ -177,17 +176,21 @@ def main(args, split_id, train_sample_ids, test_sample_ids, val_save_dir, checkp
         epoch_iter = tqdm(range(1, args.epochs + 1), ncols=100)
     else:
         epoch_iter = range(1, args.epochs + 1)
+    
 
+
+    stop_tensor = torch.tensor([0], dtype=torch.int32).cuda()  # 0:继续, 1:停止
     for epoch in epoch_iter:
         avg_loss = 0
         model.train()
+        if args.distributed:
+            dist.barrier()
 
         for step, batch in enumerate(train_loader):
             img_features, coords, gene_exp = [x.to(args.device) for x in batch]
 
-            N_randt = 10
             loss_rant = 0
-            for idxt in range(N_randt):
+            for idxt in range(args.N_randt):
                 noisy_exp, t_steps = diffusier.corrupt_exp(gene_exp)
                 pred_exp, loss = model(
                     exp=noisy_exp,
@@ -204,18 +207,17 @@ def main(args, split_id, train_sample_ids, test_sample_ids, val_save_dir, checkp
                 optimizer.step()
                 loss_rant += loss.cpu().item()
 
-            avg_loss += loss_rant/N_randt
+            avg_loss += loss_rant/args.N_randt
 
             '''
             mem_train = device_module.memory_allocated() - accelerator_memory_init
             accelerator_memory_log.append(mem_train)
             print(f"memory train: {mem_train // 2**20}MB")
             '''
-        
         avg_loss /= len(train_loader)
         if args.local_rank <= 0:
-            epoch_iter.set_description(f"epoch: {epoch}, avg_loss: {avg_loss:.3f}, best_pearson: {best_pearson:.3f}")
-
+            epoch_iter.set_description(f"epoch: {epoch}, loss: {avg_loss:.3f}, pcc: {best_pearson:.3f}")
+        
         if epoch % args.eval_step == 0 or epoch == args.epochs:
             if args.local_rank <= 0:
                 val_perf_dict, pred_dump = test(args, diffusier, model, val_loaders, return_all=True)
@@ -238,9 +240,17 @@ def main(args, split_id, train_sample_ids, test_sample_ids, val_save_dir, checkp
                 else:
                     early_stop_step += 1
                     if early_stop_step >= args.early_stop_step:
-                        print(f"pearson_mean: {best_pearson}")
-                        print("Early stopping")
-                        break
+                        #print(f"\nEarly stopping, pearson_mean: {best_pearson}")
+                        stop_tensor[0] = 1
+              
+        if args.distributed:
+            # ========== 关键：广播停止信号 ==========
+            dist.broadcast(stop_tensor, src=0)
+            
+        # 所有进程检查停止信号
+        if stop_tensor.item() == 1:
+            #print(f"Rank {args.local_rank}: Stop signal recived")
+            break  # 所有进程同时 break
 
 
     '''
@@ -251,11 +261,12 @@ def main(args, split_id, train_sample_ids, test_sample_ids, val_save_dir, checkp
     print(f"memory max: {(accelerator_memory_final - accelerator_memory_init) // 2**20}MB")
     print(f"total time: {toc_total - tic_total:.2f}s")
     '''
-    torch.cuda.empty_cache()
-    gc.collect()
     
     if args.distributed:
-        dist.barrier()
+        # 所有进程同步退出
+        print(f"Rank {args.local_rank}: Finished.")
+        del model, stop_tensor
+        torch.cuda.empty_cache()
     if args.local_rank <= 0:
         return best_val_dict["all"]
     else:
@@ -269,7 +280,7 @@ def run(args):
     all_split_results = []
     
     for i in range(len(splits) // 2):  # each split has a train and test file so we divide by 2
-        print(f"Running dataset {args.dataset} split {i}")
+        print(f"\nRunning dataset {args.dataset} split {i}")
 
         train_df = pd.read_csv(os.path.join(split_dir, f'train_{i}.csv'))
         test_df = pd.read_csv(os.path.join(split_dir, f'test_{i}.csv'))
@@ -281,23 +292,23 @@ def run(args):
         os.makedirs(kfold_save_dir, exist_ok=True)        
         checkpoint_save_dir = os.path.join(kfold_save_dir, 'checkpoints')
         os.makedirs(checkpoint_save_dir, exist_ok=True)
-        if os.path.exists(args.load_dir):
+        if args.load_dir is not None and os.path.exists(args.load_dir):
             kfold_load_dir = os.path.join(args.load_dir, f'split{i}')
             checkpoint_load_dir = os.path.join(kfold_load_dir, 'checkpoints')
         else:
             checkpoint_load_dir = None
 
         results = main(args, i, train_sample_ids, test_sample_ids, kfold_save_dir, checkpoint_save_dir, checkpoint_load_dir)
-        if results is None:
-            return
-        all_split_results.append(results)
+        if results is not None:
+            all_split_results.append(results)
 
-    kfold_results = merge_fold_results(all_split_results)
-    with open(os.path.join(args.save_dir, f'results_kfold.json'), 'w') as f:
-        p_corrs = kfold_results['pearson_corrs']
-        p_corrs = sorted(p_corrs, key=itemgetter('mean'), reverse=True)
-        kfold_results['pearson_corrs'] = p_corrs
-        json.dump(kfold_results, f, sort_keys=True, indent=4)
+    if args.local_rank <= 0:
+        kfold_results = merge_fold_results(all_split_results)
+        with open(os.path.join(args.save_dir, f'results_kfold.json'), 'w') as f:
+            p_corrs = kfold_results['pearson_corrs']
+            p_corrs = sorted(p_corrs, key=itemgetter('mean'), reverse=True)
+            kfold_results['pearson_corrs'] = p_corrs
+            json.dump(kfold_results, f, sort_keys=True, indent=4)
 
 from pprint import pprint
 import gc
@@ -313,15 +324,16 @@ if __name__ == '__main__':
     parser.add_argument('--feature_encoder', type=str, default='uni_v1_official', help="uni_v1_official | resnet50_trunc | ciga | gigapath")
     parser.add_argument('--normalize_method', type=str, default="log1p")
     #parser.add_argument('--exp_code', type=str, default="multiview")
-    parser.add_argument('--exp_code', type=str, default="womview")
-    parser.add_argument('--multiview', default=True)
+    parser.add_argument('--exp_code', type=str, default="womultiview")
+    parser.add_argument('--multiview', default=False, action='store_true', help='enable multiview')
+    parser.add_argument('--N_randt', type=int, default=10, help="number of time sampled")
 
     # training hyperparameters
     parser.add_argument('--device', type=str, default="cuda")
     parser.add_argument('--sample_times', type=int, default=10, help='Number of times to sample patches from each image')
     parser.add_argument('--batch_size', type=int, default=1, help='Batch size')
     parser.add_argument('--lr', type=float, default=5e-4)
-    parser.add_argument('--early_stop_step', type=int, default=10)
+    parser.add_argument('--early_stop_step', type=int, default=5)
     parser.add_argument('--epochs', type=int, default=45)
     parser.add_argument('--clip_norm', type=float, default=1.)
     parser.add_argument('--save_step', type=int, default=1)
@@ -363,10 +375,12 @@ if __name__ == '__main__':
     if args.distributed:
         init_distributed_mode(args)
         dist.barrier()
-        print('Training in distributed mode with multiple processes, 1 GPU per process. Process %d, total %d.'
+        print_env_vars()
+        #comprehensive_communication_test()
+        print('\nTraining in distributed mode with multiple processes, 1 GPU per process. Process %d, total %d.'
                      % (args.rank, args.world_size))
     else:
-        print('Training with a single process on 1 GPUs.')
+        print('\nTraining with a single process on 1 GPUs.')
 
     args.feature_dim = {
         "uni_v1_official": 1024,
@@ -396,12 +410,16 @@ if __name__ == '__main__':
         args.dataset = dataset
         args.save_dir = os.path.join(save_dir, dataset)
         os.makedirs(args.save_dir, exist_ok=True)
-        if os.path.exists(args.load_dir):
+        if args.load_dir is not None and os.path.exists(args.load_dir):
             args.load_dir = os.path.join(load_dir, dataset)
 
-        with open(os.path.join(args.save_dir, 'config.json'), 'w') as f:
-            json.dump(vars(args), f, sort_keys=True, indent=4)
+        if args.local_rank <= 0:
+            with open(os.path.join(args.save_dir, 'config.json'), 'w') as f:
+                json.dump(vars(args), f, sort_keys=True, indent=4)
         
         run(args)
         torch.cuda.empty_cache()
         gc.collect()
+    
+    # distributed cleanup
+    cleanup_distributed()
